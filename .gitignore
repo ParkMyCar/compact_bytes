@@ -3,3 +3,8 @@
 
 # Visual Studio Code Config
 .vscode/**
+
+# Fuzzing
+**/artifacts
+**/fuzz*.log
+hfuzz_target/**

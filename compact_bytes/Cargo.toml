@@ -1,0 +1,24 @@
+[package]
+name = "compact_bytes"
+description = "A memory efficient bytes container that transparently stores bytes on the stack, when possible"
+version = "0.1.0"
+edition = "2021"
+authors = ["Parker Timmerman <parker@parkertimmerman.com>"]
+license = "MIT/Apache-2.0"
+homepage = "https://github.com/ParkMyCar/compact_bytes"
+repository = "https://github.com/ParkMyCar/compact_bytes"
+readme = "README.md"
+keywords = ["bytes", "compact", "small", "memory", "mutable"]
+categories = ["encoding", "parsing", "memory-management", "text-processing"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+serde = "1"
+static_assertions = "1"
+
+[dev-dependencies]
+proptest = "1"
+serde_json = "1"
+test-case = "3"
+test-strategy = "0.3"

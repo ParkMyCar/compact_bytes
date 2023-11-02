@@ -9,7 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 arbitrary = { version = "1", features = ["derive"] }
-libfuzzer-sys = "0.4"
+libfuzzer-sys = { version = "0.4", optional = true }
+honggfuzz = { version = "0.5", optional = true }
 
 [dependencies.compact_bytes]
 path = "../compact_bytes"
@@ -19,3 +20,11 @@ name = "lib_fuzzer"
 path = "fuzz_targets/lib_fuzzer.rs"
 test = false
 doc = false
+required-features = ["libfuzzer-sys"]
+
+[[bin]]
+name = "honggfuzz"
+path = "src/bin/honggfuzz.rs"
+test = false
+doc = false
+required-features = ["honggfuzz"]

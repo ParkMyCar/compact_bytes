@@ -575,7 +575,7 @@ impl InlineBytes {
     #[inline]
     pub const fn empty() -> Self {
         let buffer = [0u8; CompactBytes::MAX_INLINE];
-        
+
         // Even though the below statement as no effect, we leave it for better understanding.
         #[allow(clippy::identity_op)]
         let data = INLINE_MASK | 0;
@@ -727,9 +727,7 @@ impl HeapBytes {
     #[inline(always)]
     fn layout(capacity: usize) -> alloc::Layout {
         debug_assert!(capacity > 0, "tried to allocate a HeapRow with 0 capacity");
-        alloc::Layout::array::<u8>(capacity)
-            .expect("valid capacity")
-            .pad_to_align()
+        alloc::Layout::array::<u8>(capacity).expect("valid capacity")
     }
 
     /// [`HeapBytes`] grows at an amortized rates of 1.5x
@@ -746,7 +744,7 @@ impl HeapBytes {
 
 impl Clone for HeapBytes {
     fn clone(&self) -> Self {
-        let mut new = Self::with_capacity(self.cap);
+        let mut new = Self::with_capacity(self.len);
 
         // SAFETY:
         // * We know both src and dst are valid for len bytes.

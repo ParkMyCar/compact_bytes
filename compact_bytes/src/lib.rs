@@ -450,8 +450,7 @@ impl Clone for CompactBytes {
         // performance of cloning the inline variant.
         #[cold]
         fn outlined_clone(this: &CompactBytes) -> CompactBytes {
-            let heap = unsafe { &this.heap };
-            CompactBytes { heap: heap.clone() }
+            CompactBytes::new(this.as_slice())
         }
 
         if self.spilled() {
@@ -742,22 +741,6 @@ impl HeapBytes {
     }
 }
 
-impl Clone for HeapBytes {
-    fn clone(&self) -> Self {
-        let mut new = Self::with_capacity(self.len);
-
-        // SAFETY:
-        // * We know both src and dst are valid for len bytes.
-        // * We know src and dst do not overlap, because we just allocated dst.
-        unsafe {
-            std::ptr::copy_nonoverlapping(self.ptr.as_ptr(), new.ptr.as_ptr(), self.len);
-            new.set_len(self.len);
-        }
-
-        new
-    }
-}
-
 impl Drop for HeapBytes {
     fn drop(&mut self) {
         self.dealloc()
@@ -893,6 +876,38 @@ mod test {
         assert_eq!(repr.spilled(), !control.is_empty());
         // The allocation of the Vec should get re-used.
         assert_eq!(repr.as_ptr() == pointer, !control.is_empty());
+    }
+
+    #[test]
+    fn test_cloning_inlines() {
+        let mut c = CompactBytes::with_capacity(48);
+        c.push(42);
+
+        assert_eq!(c.as_slice(), &[42]);
+        assert_eq!(c.capacity(), 48);
+        assert!(c.spilled());
+
+        let clone = c.clone();
+        assert_eq!(clone.as_slice(), &[42]);
+        assert_eq!(clone.capacity(), CompactBytes::MAX_INLINE);
+        assert!(!clone.spilled());
+    }
+
+    #[test]
+    fn test_cloning_drops_excess_capacity() {
+        let mut c = CompactBytes::with_capacity(48);
+        c.extend_from_slice(&[42; 32]);
+
+        assert_eq!(c.as_slice(), &[42; 32]);
+        assert_eq!(c.capacity(), 48);
+        assert_eq!(c.len(), 32);
+        assert!(c.spilled());
+
+        let clone = c.clone();
+        assert_eq!(clone.as_slice(), &[42; 32]);
+        assert_eq!(clone.capacity(), 32);
+        assert_eq!(clone.capacity(), clone.len());
+        assert!(clone.spilled());
     }
 
     #[proptest]

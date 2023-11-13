@@ -1,0 +1,95 @@
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+name: CI
+
+env:
+  CARGO_TERM_COLOR: "always"
+  RUSTFLAGS: "-D warnings"
+  PROPTEST_CASES: 10000
+  MIRIFLAGS: "-Zmiri-strict-provenance -Zmiri-check-number-validity"
+
+jobs:
+  check:
+    name: cargo check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: rustup toolchain install stable --no-self-update --profile minimal
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --tests
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: stable
+          - toolchain: nightly
+
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          rustup toolchain install ${{ matrix.toolchain }} --no-self-update --profile minimal
+          rustup override set ${{ matrix.toolchain }}
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test
+        run: |
+          cargo nextest run --release --manifest-path=compact_bytes/Cargo.toml --run-ignored=all
+          cargo test --doc --release --manifest-path=compact_bytes/Cargo.toml
+
+  miri:
+    name: cargo miri test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          rustup toolchain install nightly --no-self-update --profile minimal --component miri
+          rustup override set nightly
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run Miri
+        run: |
+          cargo miri nextest run --all-features --manifest-path=compact_bytes/Cargo.toml
+          cargo miri test --doc --all-features --manifest-path=compact_bytes/Cargo.toml
+
+  randomize-layout:
+    name: cargo test -Zrandomize-layout
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -Zrandomize-layout
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          rustup toolchain install nightly --no-self-update --profile minimal
+          rustup override set nightly
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run Tests with Randomized Layout
+        run: |
+          cargo nextest run --all-features --manifest-path=compact_bytes/Cargo.toml
+          cargo test --doc --all-features --manifest-path=compact_bytes/Cargo.toml

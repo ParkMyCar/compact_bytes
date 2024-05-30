@@ -282,7 +282,7 @@ impl CompactBytes {
             // possible  we could have a length of 0, and 'additional' bytes would be less then
             // `MAX_INLINE`. Some implementations might opt to drop the existing heap allocation, but
             // if a `CompactBytes` is being re-used it's likely we'll need the full original capacity,
-            // thus we do noƒt eagerly inline.
+            // thus we do not eagerly inline.
 
             if !this.spilled() {
                 let heap = HeapBytes::with_additional(this.as_slice(), additional);

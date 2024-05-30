@@ -203,7 +203,7 @@ impl CompactBytes {
     }
 
     /// Extends the [`CompactBytes`] with bytes from `slice`, resizing if necessary.
-    #[inline]
+    #[inline(always)]
     pub fn extend_from_slice(&mut self, slice: &[u8]) {
         // Reserve at least enough space to fit slice.
         self.reserve(slice.len());
@@ -269,31 +269,39 @@ impl CompactBytes {
             return;
         }
 
-        // Note: Here we are making a distinct choice to _not_ eagerly inline.
-        //
-        // `CompactBytes`s can get re-used, e.g. calling `CompactBytes::clear`, at which point it's
-        // possible  we could have a length of 0, and 'additional' bytes would be less then
-        // `MAX_INLINE`. Some implementations might opt to drop the existing heap allocation, but
-        // if a `CompactBytes` is being re-used it's likely we'll need the full original capacity,
-        // thus we do not eagerly inline.
+        // Note: We move the actual re-allocation code path into its own function
+        // so the common case of calling `reserve(...)` when we already have
+        // enough capacity can be inlined by LLVM.
+        realloc(self, len, additional);
 
-        if !self.spilled() {
-            let heap = HeapBytes::with_additional(self.as_slice(), additional);
-            *self = CompactBytes {
-                heap: ManuallyDrop::new(heap),
-            };
-        } else {
-            // SAFETY: `InlineBytes` and `HeapBytes` have the same size and alignment. We also
-            // checked above that the current `CompactBytes` is heap allocated.
-            let heap_row = unsafe { &mut self.heap };
+        #[cold]
+        fn realloc(this: &mut CompactBytes, len: usize, additional: usize) {
+            // Note: Here we are making a distinct choice to _not_ eagerly inline.
+            //
+            // `CompactBytes`s can get re-used, e.g. calling `CompactBytes::clear`, at which point it's
+            // possible  we could have a length of 0, and 'additional' bytes would be less then
+            // `MAX_INLINE`. Some implementations might opt to drop the existing heap allocation, but
+            // if a `CompactBytes` is being re-used it's likely we'll need the full original capacity,
+            // thus we do not eagerly inline.
 
-            let amortized_capacity = HeapBytes::amortized_growth(len, additional);
+            if !this.spilled() {
+                let heap = HeapBytes::with_additional(this.as_slice(), additional);
+                *this = CompactBytes {
+                    heap: ManuallyDrop::new(heap),
+                };
+            } else {
+                // SAFETY: `InlineBytes` and `HeapBytes` have the same size and alignment. We also
+                // checked above that the current `CompactBytes` is heap allocated.
+                let heap_row = unsafe { &mut this.heap };
 
-            // First attempt to resize the existing allocation, if that fails then create a new one.
-            if heap_row.realloc(amortized_capacity).is_err() {
-                let heap = HeapBytes::with_additional(self.as_slice(), additional);
-                let heap = ManuallyDrop::new(heap);
-                *self = CompactBytes { heap };
+                let amortized_capacity = HeapBytes::amortized_growth(len, additional);
+
+                // First attempt to resize the existing allocation, if that fails then create a new one.
+                if heap_row.realloc(amortized_capacity).is_err() {
+                    let heap = HeapBytes::with_additional(this.as_slice(), additional);
+                    let heap = ManuallyDrop::new(heap);
+                    *this = CompactBytes { heap };
+                }
             }
         }
     }
@@ -758,10 +766,9 @@ mod test {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_discriminant() {
-        // We're testing the discriminant (capacity) to make sure it's identified correctly. So
-        // we don't care if the pointer is valid.
+        let mut buf = vec![0u8; 32];
         let heap = HeapBytes {
-            ptr: unsafe { std::ptr::NonNull::new_unchecked(std::ptr::null_mut()) },
+            ptr: unsafe { std::ptr::NonNull::new_unchecked(buf.as_mut_ptr()) },
             len: 0,
             cap: usize::MAX >> 1,
         };
@@ -769,9 +776,11 @@ mod test {
             heap: std::mem::ManuallyDrop::new(heap),
         };
         assert!(repr.spilled());
+        // mem::forget the repr since it's underlying buffer is shared.
+        std::mem::forget(repr);
 
         let bad_heap = HeapBytes {
-            ptr: unsafe { std::ptr::NonNull::new_unchecked(std::ptr::null_mut()) },
+            ptr: unsafe { std::ptr::NonNull::new_unchecked(buf.as_mut_ptr()) },
             len: 0,
             cap: usize::MAX,
         };
@@ -780,6 +789,8 @@ mod test {
         };
         // This will identify as inline since the MSB is 1.
         assert!(!repr.spilled());
+        // mem::forget the repr since it's underlying buffer is shared.
+        std::mem::forget(repr);
     }
 
     #[test_case(&[], 0 ; "empty")]

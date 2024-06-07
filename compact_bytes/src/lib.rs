@@ -542,6 +542,10 @@ fn deserialize_compact_bytes<'de: 'a, 'a, D: serde::Deserializer<'de>>(
         fn visit_borrowed_bytes<E: serde::de::Error>(self, v: &'a [u8]) -> Result<Self::Value, E> {
             Ok(CompactBytes::new(v))
         }
+
+        fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+            Ok(CompactBytes::new(v))
+        }
     }
 
     deserializer.deserialize_bytes(CompactBytesVisitor)
@@ -762,6 +766,14 @@ mod test {
     use test_strategy::proptest;
 
     use super::{CompactBytes, HeapBytes};
+
+    #[test]
+    fn test_bitcode() {
+        let obj = CompactBytes::new(b"hello world");
+        let encoded = bitcode::serialize(&obj).unwrap();
+        let decoded: CompactBytes = bitcode::deserialize(&encoded).unwrap();
+        assert_eq!(obj.as_slice(), decoded.as_slice());
+    }
 
     #[test]
     #[cfg_attr(miri, ignore)]

@@ -18,6 +18,7 @@ serde = "1"
 static_assertions = "1"
 
 [dev-dependencies]
+bitcode = { version = "0.6.0", features = ["serde"] }
 proptest = "1"
 serde_json = "1"
 test-case = "3"

@@ -116,6 +116,23 @@ impl CompactBytes {
         }
     }
 
+    /// Creates a new empty [`CompactBytes`] a capacity of [`CompactBytes::MAX_INLINE`]. The
+    /// function can be called in `const` contexts.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use compact_bytes::CompactBytes;
+    ///
+    /// let min = CompactBytes::empty();
+    /// assert_eq!(min.capacity(), CompactBytes::MAX_INLINE);
+    /// ```
+    #[inline]
+    pub const fn empty() -> Self {
+        let inline = InlineBytes::empty();
+        CompactBytes { inline }
+    }
+
     /// Creates a new [`CompactBytes`] using the provided pointer, length, and capacity.
     ///
     /// # Safety
@@ -773,6 +790,14 @@ mod test {
         let encoded = bitcode::serialize(&obj).unwrap();
         let decoded: CompactBytes = bitcode::deserialize(&encoded).unwrap();
         assert_eq!(obj.as_slice(), decoded.as_slice());
+    }
+
+    #[test]
+    fn test_empty() {
+        let obj = const { CompactBytes::empty() };
+        assert_eq!(obj.as_slice(), [0u8; 0].as_slice());
+        assert!(obj.is_empty());
+        assert!(!obj.spilled())
     }
 
     #[test]

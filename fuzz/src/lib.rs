@@ -7,7 +7,7 @@ pub struct Scenario<'a> {
     actions: Vec<Action<'a>>,
 }
 
-impl<'a> Scenario<'a> {
+impl Scenario<'_> {
     pub fn run(self) {
         let (mut compact, mut control) = self.creation.create();
 
@@ -31,7 +31,7 @@ pub enum Creation<'a> {
     Vec(Vec<u8>),
 }
 
-impl<'a> Creation<'a> {
+impl Creation<'_> {
     pub fn create(self) -> (CompactBytes, Vec<u8>) {
         match self {
             Creation::Bytes(slice) => {
@@ -64,7 +64,7 @@ pub enum Action<'a> {
     Clone,
 }
 
-impl<'a> Action<'a> {
+impl Action<'_> {
     pub fn run(self, compact: &mut CompactBytes, control: &mut Vec<u8>) {
         match self {
             Action::Push(b) => {

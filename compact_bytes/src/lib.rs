@@ -41,8 +41,8 @@ const INLINE_MASK: u8 = 0b1000_0000;
 /// We use the most significant bit of the last byte to indicate which mode we're in.
 ///
 pub union CompactBytes {
-    heap: ManuallyDrop<HeapBytes>,
-    inline: InlineBytes,
+    heap: ManuallyDrop<HeapBytesGrowable>,
+    inline: InlineBytes23,
 }
 
 // SAFETY: It is safe to Send a `CompactBytes` to other threads because it owns all of its data.
@@ -52,8 +52,14 @@ unsafe impl Send for CompactBytes {}
 // support any kind of interior mutability, or other way to introduce races.
 unsafe impl Sync for CompactBytes {}
 
-static_assertions::assert_eq_align!(InlineBytes, HeapBytes, CompactBytes, Vec<u8>, usize);
-static_assertions::assert_eq_size!(InlineBytes, HeapBytes, CompactBytes, Vec<u8>);
+static_assertions::assert_eq_align!(
+    InlineBytes23,
+    HeapBytesGrowable,
+    CompactBytes,
+    Vec<u8>,
+    usize
+);
+static_assertions::assert_eq_size!(InlineBytes23, HeapBytesGrowable, CompactBytes, Vec<u8>);
 
 static_assertions::const_assert_eq!(std::mem::size_of::<CompactBytes>(), 24);
 
@@ -62,9 +68,9 @@ impl CompactBytes {
     pub const MAX_INLINE: usize = 23;
 
     /// The minimum amount of bytes that a [`CompactBytes`] will store on the heap.
-    pub const MIN_HEAP: usize = std::mem::size_of::<usize>() * 2;
+    pub const MIN_HEAP: usize = HeapBytesGrowable::MIN_ALLOCATION_SIZE;
     /// The maximum amount of bytes that a [`CompactBytes`] can store on the heap.
-    pub const MAX_HEAP: usize = usize::MAX >> 1;
+    pub const MAX_HEAP: usize = HeapBytesGrowable::MAX_ALLOCATION_SIZE;
 
     /// Creates a new [`CompactBytes`] from the provided slice. Stores the bytes inline if small
     /// enough.
@@ -86,10 +92,10 @@ impl CompactBytes {
     pub fn new(slice: &[u8]) -> Self {
         if slice.len() <= Self::MAX_INLINE {
             // SAFETY: We just checked that slice length is less than or equal to MAX_INLINE.
-            let inline = unsafe { InlineBytes::new(slice) };
+            let inline = unsafe { InlineBytes23::new(slice) };
             CompactBytes { inline }
         } else {
-            let heap = ManuallyDrop::new(HeapBytes::new(slice));
+            let heap = ManuallyDrop::new(HeapBytesGrowable::new(slice));
             CompactBytes { heap }
         }
     }
@@ -108,10 +114,10 @@ impl CompactBytes {
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
         if capacity <= Self::MAX_INLINE {
-            let inline = InlineBytes::empty();
+            let inline = InlineBytes23::empty();
             CompactBytes { inline }
         } else {
-            let heap = ManuallyDrop::new(HeapBytes::with_capacity(capacity));
+            let heap = ManuallyDrop::new(HeapBytesGrowable::with_capacity(capacity));
             CompactBytes { heap }
         }
     }
@@ -129,7 +135,7 @@ impl CompactBytes {
     /// ```
     #[inline]
     pub const fn empty() -> Self {
-        let inline = InlineBytes::empty();
+        let inline = InlineBytes23::empty();
         CompactBytes { inline }
     }
 
@@ -146,7 +152,7 @@ impl CompactBytes {
     ///
     #[inline]
     pub unsafe fn from_raw_parts(ptr: *mut u8, length: usize, capacity: usize) -> Self {
-        let heap = HeapBytes {
+        let heap = HeapBytesGrowable {
             ptr: NonNull::new_unchecked(ptr),
             len: length,
             cap: capacity,
@@ -198,8 +204,9 @@ impl CompactBytes {
     /// Returns the capacity of the [`CompactBytes`].
     #[inline(always)]
     pub fn capacity(&self) -> usize {
-        // SAFETY: `InlineBytes` and `HeapBytes` share the same size and alignment. Before
-        // returning this value we check whether it's valid or not.
+        // SAFETY: `InlineBytes23` and `HeapBytesGrowable` share the same size
+        // and alignment. Before returning this value we check whether it's
+        // valid or not.
         //
         // Note: This code is very carefully written so we can benefit from branchless
         // instructions.
@@ -302,7 +309,7 @@ impl CompactBytes {
             // thus we do not eagerly inline.
 
             if !this.spilled() {
-                let heap = HeapBytes::with_additional(this.as_slice(), additional);
+                let heap = HeapBytesGrowable::with_additional(this.as_slice(), additional);
                 *this = CompactBytes {
                     heap: ManuallyDrop::new(heap),
                 };
@@ -311,11 +318,11 @@ impl CompactBytes {
                 // checked above that the current `CompactBytes` is heap allocated.
                 let heap_row = unsafe { &mut this.heap };
 
-                let amortized_capacity = HeapBytes::amortized_growth(len, additional);
+                let amortized_capacity = HeapBytesGrowable::amortized_growth(len, additional);
 
                 // First attempt to resize the existing allocation, if that fails then create a new one.
                 if heap_row.realloc(amortized_capacity).is_err() {
-                    let heap = HeapBytes::with_additional(this.as_slice(), additional);
+                    let heap = HeapBytesGrowable::with_additional(this.as_slice(), additional);
                     let heap = ManuallyDrop::new(heap);
                     *this = CompactBytes { heap };
                 }
@@ -327,8 +334,9 @@ impl CompactBytes {
     #[inline]
     pub fn into_vec(self) -> Vec<u8> {
         if self.spilled() {
-            // SAFETY: `InlineBytes` and `HeapBytes` have the same size and alignment. We also
-            // checked above that the current `CompactBytes` is heap allocated.
+            // SAFETY: `InlineBytes23` and `HeapBytesGrowable` have the same
+            // size and alignment. We also checked above that the current
+            // `CompactBytes` is heap allocated.
             let heap = unsafe { &self.heap };
             let vec = unsafe { Vec::from_raw_parts(heap.ptr.as_ptr(), heap.len, heap.cap) };
             std::mem::forget(self);
@@ -342,8 +350,9 @@ impl CompactBytes {
     /// Returns if the [`CompactBytes`] has spilled to the heap.
     #[inline(always)]
     pub fn spilled(&self) -> bool {
-        // SAFETY: `InlineBytes` and `HeapBytes` have the same size and alignment. We also checked
-        // above that the current `CompactBytes` is heap allocated.
+        // SAFETY: `InlineBytes23` and `HeapBytesGrowable` have the same size
+        // and alignment. We also checked above that the current `CompactBytes`
+        // is heap allocated.
         unsafe { self.inline.data < INLINE_MASK }
     }
 
@@ -364,8 +373,9 @@ impl CompactBytes {
 
     #[inline(always)]
     fn as_ptr(&self) -> *const u8 {
-        // SAFETY: `InlineBytes` and `HeapBytes` share the same size and alignment. Before
-        // returning this value we check whether it's valid or not.
+        // SAFETY: `InlineBytes23` and `HeapBytesGrowable` share the same size
+        // and alignment. Before returning this value we check whether it's
+        // valid or not.
         //
         // Note: This code is very carefully written so we can benefit from branchless
         // instructions.
@@ -378,8 +388,9 @@ impl CompactBytes {
 
     #[inline(always)]
     fn as_mut_ptr(&mut self) -> *mut u8 {
-        // SAFETY: `InlineBytes` and `HeapBytes` share the same size and alignment. Before
-        // returning this value we check whether it's valid or not.
+        // SAFETY: `InlineBytes23` and `HeapBytesGrowable` share the same size
+        // and alignment. Before returning this value we check whether it's
+        // valid or not.
         //
         // Note: This code is very carefully written so we can benefit from branchless
         // instructions.
@@ -497,7 +508,7 @@ impl From<Vec<u8>> for CompactBytes {
     #[inline]
     fn from(mut value: Vec<u8>) -> Self {
         if value.is_empty() {
-            let inline = InlineBytes::empty();
+            let inline = InlineBytes23::empty();
             return CompactBytes { inline };
         }
 
@@ -509,7 +520,7 @@ impl From<Vec<u8>> for CompactBytes {
         // Forget the original Vec so it's underlying buffer does not get dropped.
         std::mem::forget(value);
 
-        let heap = HeapBytes { ptr, len, cap };
+        let heap = HeapBytesGrowable { ptr, len, cap };
         CompactBytes {
             heap: ManuallyDrop::new(heap),
         }
@@ -568,25 +579,34 @@ fn deserialize_compact_bytes<'de: 'a, 'a, D: serde::Deserializer<'de>>(
     deserializer.deserialize_bytes(CompactBytesVisitor)
 }
 
+/// Fixed capacity inline buffer of bytes.
 #[repr(C, align(8))]
 #[derive(Copy, Clone)]
-struct InlineBytes {
-    buffer: [u8; CompactBytes::MAX_INLINE],
+struct InlineBytes<const CAPACITY: usize> {
+    buffer: [u8; CAPACITY],
     data: u8,
 }
 
-impl InlineBytes {
+/// Inline storage for [`CompactBytes`].
+type InlineBytes23 = InlineBytes<23>;
+static_assertions::assert_eq_size!(InlineBytes23, Vec<u8>);
+
+impl<const CAPACITY: usize> InlineBytes<CAPACITY> {
+    /// The amount of bytes this [`InlineBytes`] can store inline.
+    const CAPACITY: usize = CAPACITY;
+
     /// Create an [`InlineBytes`] from the provided slice.
     ///
     /// Safety:
-    /// * `slice` must have a length less than or equal to [`CompactBytes::MAX_INLINE`].
+    ///
+    /// * `slice` must have a length less than or equal to `CAPACITY`.
     ///
     #[inline]
     pub unsafe fn new(slice: &[u8]) -> Self {
-        debug_assert!(slice.len() <= CompactBytes::MAX_INLINE);
+        debug_assert!(slice.len() <= CAPACITY);
 
         let len = slice.len();
-        let mut buffer = [0u8; CompactBytes::MAX_INLINE];
+        let mut buffer = [0u8; CAPACITY];
 
         // SAFETY: We know src and dst are valid for len bytes, nor do they overlap.
         unsafe {
@@ -602,7 +622,7 @@ impl InlineBytes {
 
     #[inline]
     pub const fn empty() -> Self {
-        let buffer = [0u8; CompactBytes::MAX_INLINE];
+        let buffer = [0u8; CAPACITY];
 
         // Even though the below statement as no effect, we leave it for better understanding.
         #[allow(clippy::identity_op)]
@@ -618,48 +638,55 @@ impl InlineBytes {
     /// Forces the length of [`InlineBytes`] to `new_len`.
     ///
     /// # Safety
-    /// * `new_len` must be less than or equal to [`CompactBytes::MAX_INLINE`].
+    /// * `new_len` must be less than or equal to the generic `CAPACITY`.
     /// * `new_len` must be less than or equal to capacity.
     /// * The bytes at `old_len..new_len` must be initialized.
     ///
     unsafe fn set_len(&mut self, new_len: usize) {
-        debug_assert!(new_len <= CompactBytes::MAX_INLINE);
+        debug_assert!(new_len <= CAPACITY);
         self.data = INLINE_MASK | (new_len as u8);
     }
 }
 
+/// A growable heap allocation of bytes.
 #[repr(C)]
-struct HeapBytes {
+struct HeapBytesGrowable {
     ptr: NonNull<u8>,
     len: usize,
     cap: usize,
 }
+static_assertions::assert_eq_size!(HeapBytesGrowable, Vec<u8>);
 
-impl HeapBytes {
+impl HeapBytesGrowable {
+    /// The minimum allocation size for a [`HeapBytesGrowable`].
+    pub const MIN_ALLOCATION_SIZE: usize = std::mem::size_of::<usize>() * 2;
+    /// The maximum allocation size for a [`HeapBytesGrowable`].
+    pub const MAX_ALLOCATION_SIZE: usize = usize::MAX >> 1;
+
     #[inline]
     pub fn new(slice: &[u8]) -> Self {
         let len = slice.len();
-        let cap = len.max(CompactBytes::MIN_HEAP);
+        let cap = len.max(Self::MIN_ALLOCATION_SIZE);
 
-        debug_assert!(cap <= CompactBytes::MAX_HEAP, "too large of allocation");
-        let ptr = Self::alloc_ptr(cap);
+        debug_assert!(cap <= Self::MAX_ALLOCATION_SIZE, "too large of allocation");
+        let ptr = heap::alloc_ptr(cap);
 
         unsafe { ptr.as_ptr().copy_from_nonoverlapping(slice.as_ptr(), len) };
 
-        HeapBytes { ptr, len, cap }
+        HeapBytesGrowable { ptr, len, cap }
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
         assert!(
-            capacity <= CompactBytes::MAX_HEAP,
+            capacity <= Self::MAX_ALLOCATION_SIZE,
             "too large of allocation"
         );
 
         let len = 0;
-        let cap = capacity.max(CompactBytes::MIN_HEAP);
-        let ptr = Self::alloc_ptr(cap);
+        let cap = capacity.max(Self::MIN_ALLOCATION_SIZE);
+        let ptr = heap::alloc_ptr(cap);
 
-        HeapBytes {
+        HeapBytesGrowable {
             ptr,
             len,
             cap: capacity,
@@ -696,16 +723,16 @@ impl HeapBytes {
             return Err(());
         }
 
-        // Always allocate at least "4 usize" amount of bytes.
-        let new_capacity = new_capacity.max(CompactBytes::MIN_HEAP);
+        // Always allocate some minimum amount of bytes.
+        let new_capacity = new_capacity.max(Self::MIN_ALLOCATION_SIZE);
 
         // Already at the appropriate size!
         if new_capacity == self.cap {
             return Ok(new_capacity);
         }
 
-        let cur_layout = Self::layout(self.cap);
-        let new_layout = Self::layout(new_capacity);
+        let cur_layout = heap::layout(self.cap);
+        let new_layout = heap::layout(new_capacity);
 
         // Check for overflow.
         let new_size = new_layout.size();
@@ -728,34 +755,7 @@ impl HeapBytes {
 
     #[inline]
     fn dealloc(&mut self) {
-        Self::dealloc_ptr(self.ptr, self.cap);
-    }
-
-    #[inline]
-    fn alloc_ptr(capacity: usize) -> NonNull<u8> {
-        let layout = Self::layout(capacity);
-        debug_assert!(layout.size() > 0);
-
-        // SAFETY: We ensure that the layout is not zero sized, by enforcing a minimum size.
-        let ptr = unsafe { alloc::alloc(layout) };
-
-        NonNull::new(ptr).expect("failed to allocate HeapRow")
-    }
-
-    #[inline]
-    fn dealloc_ptr(ptr: NonNull<u8>, capacity: usize) {
-        let layout = Self::layout(capacity);
-
-        // SAFETY:
-        // * The pointer was allocated via this allocator.
-        // * We used the same layout when allocating.
-        unsafe { alloc::dealloc(ptr.as_ptr(), layout) };
-    }
-
-    #[inline(always)]
-    fn layout(capacity: usize) -> alloc::Layout {
-        debug_assert!(capacity > 0, "tried to allocate a HeapRow with 0 capacity");
-        alloc::Layout::array::<u8>(capacity).expect("valid capacity")
+        heap::dealloc_ptr(self.ptr, self.cap);
     }
 
     /// [`HeapBytes`] grows at an amortized rates of 1.5x
@@ -770,9 +770,50 @@ impl HeapBytes {
     }
 }
 
-impl Drop for HeapBytes {
+impl Drop for HeapBytesGrowable {
     fn drop(&mut self) {
         self.dealloc()
+    }
+}
+
+
+    #[inline]
+
+mod heap {
+    use std::alloc;
+    use std::ptr::NonNull;
+
+    /// Create an allocation with [`layout`].
+    #[inline]
+    pub(crate) fn alloc_ptr(capacity: usize) -> NonNull<u8> {
+        let layout = layout(capacity);
+        debug_assert!(layout.size() > 0);
+
+        // SAFETY: We ensure that the layout is not zero sized, by enforcing a minimum size.
+        let ptr = unsafe { alloc::alloc(layout) };
+
+        NonNull::new(ptr).expect("failed to allocate HeapRow")
+    }
+
+    /// Drop an allocation that was created with [`layout`].
+    #[inline]
+    pub(crate) fn dealloc_ptr(ptr: NonNull<u8>, capacity: usize) {
+        let layout = layout(capacity);
+
+        // SAFETY:
+        // * The pointer was allocated via this allocator.
+        // * We used the same layout when allocating.
+        unsafe { alloc::dealloc(ptr.as_ptr(), layout) };
+    }
+
+    /// Returns the [`alloc::Layout`] for [`HeapBytesGrowable`] and [`HeapBytesSlice`].
+    ///
+    /// [`HeapBytesGrowable`]: super::HeapBytesGrowable
+    /// [`HeapBytesSlice`]: super::HeapBytesSlice
+    #[inline(always)]
+    pub(crate) fn layout(capacity: usize) -> alloc::Layout {
+        debug_assert!(capacity > 0, "tried to allocate a HeapRow with 0 capacity");
+        alloc::Layout::array::<u8>(capacity).expect("valid capacity")
     }
 }
 
@@ -782,7 +823,7 @@ mod test {
     use test_case::test_case;
     use test_strategy::proptest;
 
-    use super::{CompactBytes, HeapBytes};
+    use super::{CompactBytes, HeapBytesGrowable};
 
     #[test]
     fn test_bitcode() {
@@ -804,7 +845,7 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_discriminant() {
         let mut buf = vec![0u8; 32];
-        let heap = HeapBytes {
+        let heap = HeapBytesGrowable {
             ptr: unsafe { std::ptr::NonNull::new_unchecked(buf.as_mut_ptr()) },
             len: 0,
             cap: usize::MAX >> 1,
@@ -816,7 +857,7 @@ mod test {
         // mem::forget the repr since it's underlying buffer is shared.
         std::mem::forget(repr);
 
-        let bad_heap = HeapBytes {
+        let bad_heap = HeapBytesGrowable {
             ptr: unsafe { std::ptr::NonNull::new_unchecked(buf.as_mut_ptr()) },
             len: 0,
             cap: usize::MAX,

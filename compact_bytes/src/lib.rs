@@ -3,7 +3,10 @@
 use std::alloc;
 use std::ptr::NonNull;
 
+mod fixed;
 mod growable;
+
+pub use fixed::CompactBytesSlice;
 pub use growable::CompactBytes;
 
 const INLINE_MASK: u8 = 0b1000_0000;
@@ -19,6 +22,10 @@ struct InlineBytes<const CAPACITY: usize> {
 /// Inline storage for [`CompactBytes`].
 type InlineBytes23 = InlineBytes<23>;
 static_assertions::assert_eq_size!(InlineBytes23, Vec<u8>);
+
+/// Inline storage for [`CompactBytesSlice`].
+type InlineBytes15 = InlineBytes<15>;
+static_assertions::assert_eq_size!(InlineBytes15, Box<[u8]>);
 
 impl<const CAPACITY: usize> InlineBytes<CAPACITY> {
     /// The amount of bytes this [`InlineBytes`] can store inline.
@@ -205,8 +212,34 @@ impl Drop for HeapBytesGrowable {
     }
 }
 
+/// A fixed size heap allocation of bytes.
+#[repr(C)]
+struct HeapBytesFixed {
+    ptr: NonNull<u8>,
+    len: usize,
+}
+static_assertions::assert_eq_size!(HeapBytesFixed, Box<[u8]>);
+
+impl HeapBytesFixed {
+    /// The maximum allocation size for a [`HeapBytesFixed`].
+    pub const MAX_ALLOCATION_SIZE: usize = usize::MAX >> 1;
 
     #[inline]
+    pub fn new(slice: &[u8]) -> Self {
+        let len = slice.len();
+        debug_assert!(len <= Self::MAX_ALLOCATION_SIZE, "too large of allocation");
+
+        let ptr = heap::alloc_ptr(len);
+        unsafe { ptr.as_ptr().copy_from_nonoverlapping(slice.as_ptr(), len) };
+
+        HeapBytesFixed { ptr, len }
+    }
+
+    #[inline]
+    fn dealloc(&mut self) {
+        heap::dealloc_ptr(self.ptr, self.len);
+    }
+}
 
 mod heap {
     use std::alloc;

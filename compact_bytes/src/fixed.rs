@@ -136,6 +136,8 @@ impl CompactBytesSlice {
         //
         // Note: This code is very carefully written so we can benefit from branchless
         // instructions.
+        //
+        // Note: If the `CompactBytesSlice`
         let (mut length, heap_length) = unsafe { (self.inline.len(), self.heap.len) };
         if self.spilled() {
             length = heap_length;
@@ -148,20 +150,6 @@ impl CompactBytesSlice {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    /// Returns the capacity of the [`CompactBytesSlice`].
-    #[inline(always)]
-    pub fn capacity(&self) -> usize {
-        // SAFETY: `InlineBytes15` and `HeapBytesFixed` share the same size and alignment.
-        //
-        // Note: This code is very carefully written so we can benefit from branchless
-        // instructions.
-        let (mut capacity, heap_capacity) = unsafe { (Self::MAX_INLINE, self.heap.len) };
-        if self.spilled() {
-            capacity = heap_capacity;
-        }
-        capacity
     }
 
     /// Consumes the [`CompactBytesSlice`], returning a `Box<[u8]>`.
@@ -293,7 +281,7 @@ impl Drop for CompactBytesSlice {
 impl Clone for CompactBytesSlice {
     #[inline]
     fn clone(&self) -> Self {
-        // Note: we hint to the compiler that cloing a heap variant is cold to improve the
+        // Note: we hint to the compiler that cloning a heap variant is cold to improve the
         // performance of cloning the inline variant.
         #[cold]
         fn outlined_clone(this: &CompactBytesSlice) -> CompactBytesSlice {
@@ -313,8 +301,7 @@ impl From<Box<[u8]>> for CompactBytesSlice {
     #[inline]
     fn from(value: Box<[u8]>) -> Self {
         if value.is_empty() {
-            let inline = InlineBytes15::empty();
-            return CompactBytesSlice { inline };
+            return CompactBytesSlice::empty();
         }
 
         // "leak" the Box so dropping the value does not de-allocate the backing buffer.

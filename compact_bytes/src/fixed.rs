@@ -152,6 +152,20 @@ impl CompactBytesSlice {
         self.len() == 0
     }
 
+    /// Returns the capacity of the [`CompactBytesSlice`].
+    #[inline(always)]
+    pub fn capacity(&self) -> usize {
+        // SAFETY: `InlineBytes15` and `HeapBytesFixed` share the same size and alignment.
+        //
+        // Note: This code is very carefully written so we can benefit from branchless
+        // instructions.
+        let (mut capacity, heap_capacity) = unsafe { (Self::MAX_INLINE, self.heap.len) };
+        if self.spilled() {
+            capacity = heap_capacity;
+        }
+        capacity
+    }
+
     /// Consumes the [`CompactBytesSlice`], returning a `Box<[u8]>`.
     #[inline]
     pub fn into_boxed_slice(self) -> Box<[u8]> {

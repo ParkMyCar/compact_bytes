@@ -122,11 +122,7 @@ impl HeapBytesGrowable {
         let cap = capacity.max(Self::MIN_ALLOCATION_SIZE);
         let ptr = heap::alloc_ptr(cap);
 
-        HeapBytesGrowable {
-            ptr,
-            len,
-            cap: capacity,
-        }
+        HeapBytesGrowable { ptr, len, cap }
     }
 
     pub fn with_additional(slice: &[u8], additional: usize) -> Self {

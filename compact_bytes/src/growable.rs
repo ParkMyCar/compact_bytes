@@ -874,4 +874,10 @@ mod test {
         prop_assert_eq!(&repr, &repr_rnd_trip);
         prop_assert_eq!(repr_rnd_trip, ctrl_rnd_trip);
     }
+
+    #[test]
+    fn test_heap_bytes_capacity() {
+        let heap = HeapBytesGrowable::with_capacity(1);
+        drop(heap);
+    }
 }

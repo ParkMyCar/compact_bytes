@@ -180,10 +180,7 @@ impl CompactBytesSlice {
 
             boxed
         } else {
-            // SAFETY: `InlineBytes15` and `HeapBytesFixed` have the same size and alignment.
-            // Above we checked if the current `CompactBytesSlice` is heap allocated.
-            let inline = unsafe { &self.inline };
-            inline.buffer.into()
+            self.as_slice().into()
         }
     }
 
@@ -468,5 +465,22 @@ mod test {
         assert_eq!(repr.spilled(), !control.is_empty());
         // The allocation of the Vec should get re-used.
         assert_eq!(repr.as_ptr() == pointer, !control.is_empty());
+    }
+
+    // Plain test cases (not proptests) so these run under miri.
+    #[test_case(0 ; "empty")]
+    #[test_case(CompactBytesSlice::MAX_INLINE - 1 ; "below_max_inline")]
+    #[test_case(CompactBytesSlice::MAX_INLINE ; "max_inline")]
+    #[test_case(CompactBytesSlice::MAX_INLINE + 1 ; "first_spill")]
+    fn test_into_boxed_slice_len(len: usize) {
+        let control: Vec<u8> = (0..len).map(|i| i as u8).collect();
+
+        let repr = CompactBytesSlice::new(&control);
+        assert_eq!(repr.spilled(), len > CompactBytesSlice::MAX_INLINE);
+        assert_eq!(&*repr.clone().into_boxed_slice(), control.as_slice());
+        assert_eq!(&*repr.into_boxed_slice(), control.as_slice());
+
+        let from_box = CompactBytesSlice::from(control.clone().into_boxed_slice());
+        assert_eq!(&*from_box.into_boxed_slice(), control.as_slice());
     }
 }

@@ -149,11 +149,7 @@ impl CompactBytes {
     ///
     #[inline]
     pub unsafe fn from_raw_parts(ptr: *mut u8, length: usize, capacity: usize) -> Self {
-        let heap = HeapBytesGrowable {
-            ptr: NonNull::new_unchecked(ptr),
-            len: length,
-            cap: capacity,
-        };
+        let heap = HeapBytesGrowable::from_parts(NonNull::new_unchecked(ptr), length, capacity);
         let heap = ManuallyDrop::new(heap);
         CompactBytes { heap }
     }
@@ -207,7 +203,7 @@ impl CompactBytes {
         //
         // Note: This code is very carefully written so we can benefit from branchless
         // instructions.
-        let (mut capacity, heap_capacity) = unsafe { (Self::MAX_INLINE, self.heap.cap) };
+        let (mut capacity, heap_capacity) = unsafe { (Self::MAX_INLINE, self.heap.cap()) };
         if self.spilled() {
             capacity = heap_capacity;
         }
@@ -335,7 +331,7 @@ impl CompactBytes {
             // size and alignment. We also checked above that the current
             // `CompactBytes` is heap allocated.
             let heap = unsafe { &self.heap };
-            let vec = unsafe { Vec::from_raw_parts(heap.ptr.as_ptr(), heap.len, heap.cap) };
+            let vec = unsafe { Vec::from_raw_parts(heap.ptr.as_ptr(), heap.len, heap.cap()) };
             std::mem::forget(self);
 
             vec
@@ -517,7 +513,7 @@ impl From<Vec<u8>> for CompactBytes {
         // Forget the original Vec so it's underlying buffer does not get dropped.
         std::mem::forget(value);
 
-        let heap = HeapBytesGrowable { ptr, len, cap };
+        let heap = HeapBytesGrowable::from_parts(ptr, len, cap);
         CompactBytes {
             heap: ManuallyDrop::new(heap),
         }
@@ -604,11 +600,8 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_discriminant() {
         let mut buf = vec![0u8; 32];
-        let heap = HeapBytesGrowable {
-            ptr: unsafe { std::ptr::NonNull::new_unchecked(buf.as_mut_ptr()) },
-            len: 0,
-            cap: usize::MAX >> 1,
-        };
+        let ptr = unsafe { std::ptr::NonNull::new_unchecked(buf.as_mut_ptr()) };
+        let heap = HeapBytesGrowable::from_parts(ptr, 0, usize::MAX >> 1);
         let repr = CompactBytes {
             heap: std::mem::ManuallyDrop::new(heap),
         };
@@ -616,11 +609,7 @@ mod test {
         // mem::forget the repr since it's underlying buffer is shared.
         std::mem::forget(repr);
 
-        let bad_heap = HeapBytesGrowable {
-            ptr: unsafe { std::ptr::NonNull::new_unchecked(buf.as_mut_ptr()) },
-            len: 0,
-            cap: usize::MAX,
-        };
+        let bad_heap = HeapBytesGrowable::from_parts(ptr, 0, usize::MAX);
         let repr = CompactBytes {
             heap: std::mem::ManuallyDrop::new(bad_heap),
         };
@@ -628,6 +617,56 @@ mod test {
         assert!(!repr.spilled());
         // mem::forget the repr since it's underlying buffer is shared.
         std::mem::forget(repr);
+    }
+
+    // Lengths and capacities whose low byte is >= 0x80 overlap the inline tag on big-endian
+    // targets. A plain test so it also runs under `miri --target s390x-unknown-linux-gnu`.
+    #[test]
+    fn heap_tag_every_length_and_capacity() {
+        for len in 0..=600usize {
+            let control: Vec<u8> = (0..len).map(|i| i as u8).collect();
+            let spills = len > CompactBytes::MAX_INLINE;
+
+            let repr = CompactBytes::new(&control);
+            assert_eq!(repr.spilled(), spills, "len={len}");
+            assert_eq!(repr.as_slice(), control.as_slice(), "len={len}");
+            assert!(repr.capacity() >= len, "len={len}");
+            assert_eq!(repr.clone().as_slice(), control.as_slice(), "len={len}");
+            assert_eq!(repr.into_vec(), control, "len={len}");
+
+            let with_cap = CompactBytes::with_capacity(len);
+            assert_eq!(with_cap.spilled(), spills, "cap={len}");
+            assert!(with_cap.capacity() >= len, "cap={len}");
+            assert!(with_cap.is_empty(), "cap={len}");
+
+            let mut vec = Vec::with_capacity(len.max(1));
+            vec.push(1u8);
+            let cap = vec.capacity();
+            let from_vec = CompactBytes::from(vec);
+            assert!(from_vec.spilled(), "cap={cap}");
+            assert_eq!(from_vec.capacity(), cap);
+            assert_eq!(from_vec.as_slice(), &[1]);
+            let vec = from_vec.into_vec();
+            assert_eq!(vec.capacity(), cap);
+
+            let mut vec = std::mem::ManuallyDrop::new(vec);
+            // SAFETY: ptr/len/cap come from a live `Vec<u8>` that is not dropped.
+            let raw = unsafe { CompactBytes::from_raw_parts(vec.as_mut_ptr(), vec.len(), cap) };
+            assert!(raw.spilled(), "cap={cap}");
+            assert_eq!(raw.capacity(), cap);
+            assert_eq!(raw.as_slice(), &[1]);
+        }
+
+        let mut control = Vec::new();
+        let mut repr = CompactBytes::empty();
+        for i in 0..=600usize {
+            repr.push(i as u8);
+            control.push(i as u8);
+            assert_eq!(repr.spilled(), control.len() > CompactBytes::MAX_INLINE);
+            assert_eq!(repr.as_slice(), control.as_slice());
+            assert!(repr.capacity() >= repr.len());
+        }
+        assert_eq!(repr.into_vec(), control);
     }
 
     #[test_case(&[], 0 ; "empty")]

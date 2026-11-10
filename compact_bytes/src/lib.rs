@@ -85,15 +85,40 @@ impl<const CAPACITY: usize> InlineBytes<CAPACITY> {
 }
 
 /// A growable heap allocation of bytes.
+///
+/// `cap_le` is the capacity stored in little-endian byte order on every platform. Its last
+/// byte shares memory with the inline discriminant (`InlineBytes::data`), so that byte must
+/// be the capacity's MOST significant one, which is always `< INLINE_MASK` because
+/// `cap <= MAX_ALLOCATION_SIZE`. Storing it natively broke big-endian targets, where the last
+/// byte is the least significant: a capacity like 128 (`0x80`) read as inline.
 #[repr(C)]
 struct HeapBytesGrowable {
     ptr: NonNull<u8>,
     len: usize,
-    cap: usize,
+    cap_le: usize,
 }
 static_assertions::assert_eq_size!(HeapBytesGrowable, Vec<u8>);
 
 impl HeapBytesGrowable {
+    #[inline(always)]
+    const fn from_parts(ptr: NonNull<u8>, len: usize, cap: usize) -> Self {
+        HeapBytesGrowable {
+            ptr,
+            len,
+            cap_le: cap.to_le(),
+        }
+    }
+
+    #[inline(always)]
+    const fn cap(&self) -> usize {
+        usize::from_le(self.cap_le)
+    }
+
+    #[inline(always)]
+    fn set_cap(&mut self, cap: usize) {
+        self.cap_le = cap.to_le();
+    }
+
     /// The minimum allocation size for a [`HeapBytesGrowable`].
     pub const MIN_ALLOCATION_SIZE: usize = std::mem::size_of::<usize>() * 2;
     /// The maximum allocation size for a [`HeapBytesGrowable`].
@@ -109,7 +134,7 @@ impl HeapBytesGrowable {
 
         unsafe { ptr.as_ptr().copy_from_nonoverlapping(slice.as_ptr(), len) };
 
-        HeapBytesGrowable { ptr, len, cap }
+        HeapBytesGrowable::from_parts(ptr, len, cap)
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
@@ -122,14 +147,14 @@ impl HeapBytesGrowable {
         let cap = capacity.max(Self::MIN_ALLOCATION_SIZE);
         let ptr = heap::alloc_ptr(cap);
 
-        HeapBytesGrowable { ptr, len, cap }
+        HeapBytesGrowable::from_parts(ptr, len, cap)
     }
 
     pub fn with_additional(slice: &[u8], additional: usize) -> Self {
         let new_capacity = Self::amortized_growth(slice.len(), additional);
         let mut row = Self::with_capacity(new_capacity);
 
-        debug_assert!(row.cap > slice.len());
+        debug_assert!(row.cap() > slice.len());
 
         // SAFETY: We know src and dst are both valid for len bytes, nor are they overlapping.
         unsafe {
@@ -159,11 +184,11 @@ impl HeapBytesGrowable {
         let new_capacity = new_capacity.max(Self::MIN_ALLOCATION_SIZE);
 
         // Already at the appropriate size!
-        if new_capacity == self.cap {
+        if new_capacity == self.cap() {
             return Ok(new_capacity);
         }
 
-        let cur_layout = heap::layout(self.cap);
+        let cur_layout = heap::layout(self.cap());
         let new_layout = heap::layout(new_capacity);
 
         // Check for overflow.
@@ -180,14 +205,14 @@ impl HeapBytesGrowable {
         let ptr = NonNull::new(raw_ptr).ok_or(())?;
 
         self.ptr = ptr;
-        self.cap = new_capacity;
+        self.set_cap(new_capacity);
 
         Ok(new_capacity)
     }
 
     #[inline]
     fn dealloc(&mut self) {
-        heap::dealloc_ptr(self.ptr, self.cap);
+        heap::dealloc_ptr(self.ptr, self.cap());
     }
 
     /// [`HeapBytes`] grows at an amortized rates of 1.5x
@@ -209,14 +234,30 @@ impl Drop for HeapBytesGrowable {
 }
 
 /// A fixed size heap allocation of bytes.
+///
+/// `len_le` is the length stored in little-endian byte order on every platform, for the same
+/// reason as [`HeapBytesGrowable`]'s `cap_le`: its last byte is the inline discriminant.
 #[repr(C)]
 struct HeapBytesFixed {
     ptr: NonNull<u8>,
-    len: usize,
+    len_le: usize,
 }
 static_assertions::assert_eq_size!(HeapBytesFixed, Box<[u8]>);
 
 impl HeapBytesFixed {
+    #[inline(always)]
+    const fn from_parts(ptr: NonNull<u8>, len: usize) -> Self {
+        HeapBytesFixed {
+            ptr,
+            len_le: len.to_le(),
+        }
+    }
+
+    #[inline(always)]
+    const fn len(&self) -> usize {
+        usize::from_le(self.len_le)
+    }
+
     /// The maximum allocation size for a [`HeapBytesFixed`].
     pub const MAX_ALLOCATION_SIZE: usize = usize::MAX >> 1;
 
@@ -228,12 +269,12 @@ impl HeapBytesFixed {
         let ptr = heap::alloc_ptr(len);
         unsafe { ptr.as_ptr().copy_from_nonoverlapping(slice.as_ptr(), len) };
 
-        HeapBytesFixed { ptr, len }
+        HeapBytesFixed::from_parts(ptr, len)
     }
 
     #[inline]
     fn dealloc(&mut self) {
-        heap::dealloc_ptr(self.ptr, self.len);
+        heap::dealloc_ptr(self.ptr, self.len());
     }
 }
 

@@ -103,10 +103,7 @@ impl CompactBytesSlice {
     ///
     #[inline]
     pub unsafe fn from_raw_parts(ptr: *mut u8, length: usize) -> Self {
-        let heap = HeapBytesFixed {
-            ptr: NonNull::new_unchecked(ptr),
-            len: length,
-        };
+        let heap = HeapBytesFixed::from_parts(NonNull::new_unchecked(ptr), length);
         let heap = ManuallyDrop::new(heap);
         CompactBytesSlice { heap }
     }
@@ -138,7 +135,7 @@ impl CompactBytesSlice {
         // instructions.
         //
         // Note: If the `CompactBytesSlice`
-        let (mut length, heap_length) = unsafe { (self.inline.len(), self.heap.len) };
+        let (mut length, heap_length) = unsafe { (self.inline.len(), self.heap.len()) };
         if self.spilled() {
             length = heap_length;
         }
@@ -159,7 +156,7 @@ impl CompactBytesSlice {
         //
         // Note: This code is very carefully written so we can benefit from branchless
         // instructions.
-        let (mut capacity, heap_capacity) = unsafe { (Self::MAX_INLINE, self.heap.len) };
+        let (mut capacity, heap_capacity) = unsafe { (Self::MAX_INLINE, self.heap.len()) };
         if self.spilled() {
             capacity = heap_capacity;
         }
@@ -174,7 +171,7 @@ impl CompactBytesSlice {
             // Above we checked if the current `CompactBytesSlice` is heap allocated.
             let heap = unsafe { &self.heap };
 
-            let slice = unsafe { core::slice::from_raw_parts_mut(heap.ptr.as_ptr(), heap.len) };
+            let slice = unsafe { core::slice::from_raw_parts_mut(heap.ptr.as_ptr(), heap.len()) };
             let boxed = unsafe { Box::from_raw(slice) };
             std::mem::forget(self);
 
@@ -326,7 +323,7 @@ impl From<Box<[u8]>> for CompactBytesSlice {
         // pointer is not null.
         let ptr = unsafe { NonNull::new_unchecked(ptr) };
 
-        let heap = HeapBytesFixed { ptr, len };
+        let heap = HeapBytesFixed::from_parts(ptr, len);
         CompactBytesSlice {
             heap: ManuallyDrop::new(heap),
         }
@@ -353,10 +350,8 @@ mod test {
     #[cfg_attr(miri, ignore)]
     fn test_discriminant() {
         let mut buf = vec![0u8; 32];
-        let heap = HeapBytesFixed {
-            ptr: unsafe { std::ptr::NonNull::new_unchecked(buf.as_mut_ptr()) },
-            len: usize::MAX >> 1,
-        };
+        let ptr = unsafe { std::ptr::NonNull::new_unchecked(buf.as_mut_ptr()) };
+        let heap = HeapBytesFixed::from_parts(ptr, usize::MAX >> 1);
         let repr = CompactBytesSlice {
             heap: std::mem::ManuallyDrop::new(heap),
         };
@@ -364,10 +359,7 @@ mod test {
         // mem::forget the repr since it's underlying buffer is shared.
         std::mem::forget(repr);
 
-        let bad_heap = HeapBytesFixed {
-            ptr: unsafe { std::ptr::NonNull::new_unchecked(buf.as_mut_ptr()) },
-            len: usize::MAX,
-        };
+        let bad_heap = HeapBytesFixed::from_parts(ptr, usize::MAX);
         let repr = CompactBytesSlice {
             heap: std::mem::ManuallyDrop::new(bad_heap),
         };
@@ -375,6 +367,42 @@ mod test {
         assert!(!repr.spilled());
         // mem::forget the repr since it's underlying buffer is shared.
         std::mem::forget(repr);
+    }
+
+    // Lengths whose low byte is >= 0x80 overlap the inline tag on big-endian targets. A plain
+    // test so it also runs under `miri --target s390x-unknown-linux-gnu`.
+    #[test]
+    fn heap_tag_every_length() {
+        for len in 0..=600usize {
+            let control: Vec<u8> = (0..len).map(|i| i as u8).collect();
+            let spills = len > CompactBytesSlice::MAX_INLINE;
+
+            let repr = CompactBytesSlice::new(&control);
+            assert_eq!(repr.spilled(), spills, "len={len}");
+            assert_eq!(repr.as_slice(), control.as_slice(), "len={len}");
+            assert_eq!(repr.len(), len, "len={len}");
+            assert!(repr.capacity() >= len, "len={len}");
+            assert_eq!(repr.clone().as_slice(), control.as_slice(), "len={len}");
+            if spills {
+                assert_eq!(&*repr.into_boxed_slice(), control.as_slice(), "len={len}");
+            }
+
+            let from_box = CompactBytesSlice::from(control.clone().into_boxed_slice());
+            assert_eq!(from_box.spilled(), len > 0, "len={len}");
+            assert_eq!(from_box.as_slice(), control.as_slice(), "len={len}");
+
+            if len > 0 {
+                let boxed = from_box.into_boxed_slice();
+                assert_eq!(&*boxed, control.as_slice(), "len={len}");
+
+                let raw = Box::into_raw(boxed) as *mut u8;
+                // SAFETY: ptr/len come from a live `Box<[u8]>` of exactly `len` bytes.
+                let raw = unsafe { CompactBytesSlice::from_raw_parts(raw, len) };
+                assert!(raw.spilled(), "len={len}");
+                assert_eq!(raw.capacity(), len, "len={len}");
+                assert_eq!(raw.as_slice(), control.as_slice(), "len={len}");
+            }
+        }
     }
 
     #[test_case(&[], 0 ; "empty")]
